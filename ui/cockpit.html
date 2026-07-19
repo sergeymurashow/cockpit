@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Project Cockpit</title>
+  <style>
+    :root { color-scheme: dark; --bg:#111318; --panel:#1a1d24; --line:#2b303b; --muted:#8e96a5; --blue:#5aa7ff; --green:#58d68d; --orange:#ffb454; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:28px; background:var(--bg); color:#f1f4f8; font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; }
+    h1 { margin:0; font-size:26px; letter-spacing:-.5px; }
+    button { border:1px solid var(--line); border-radius:8px; background:#222733; color:#eef3fa; padding:9px 13px; cursor:pointer; }
+    button:hover { border-color:var(--blue); background:#263246; }
+    .toolbar { display:flex; gap:8px; }
+    .summary { color:var(--muted); margin:-12px 0 20px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+    .grid.list { display:flex; flex-direction:column; gap:8px; }
+    .grid.list .card { min-height:0; display:grid; grid-template-columns:minmax(180px,1.1fr) minmax(260px,2fr) auto; align-items:center; gap:18px; padding:12px 15px; }
+    .grid.list .meta { flex:none; }
+    .grid.list .actions { justify-content:flex-end; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:17px; min-height:145px; display:flex; flex-direction:column; gap:11px; cursor:pointer; }
+    .card:hover { border-color:#496788; }
+    .card-head { display:flex; align-items:center; gap:9px; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 10px #58d68d88; }
+    .name { font-weight:600; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .meta { color:var(--muted); font-size:12px; line-height:1.5; flex:1; }
+    .actions { display:flex; gap:7px; }
+    .icon-button { width:34px; height:32px; padding:0; font-size:16px; }
+    .modal-backdrop { position:fixed; inset:0; background:#080a0fcc; display:flex; align-items:center; justify-content:center; z-index:5; }
+    .modal { width:min(680px,calc(100vw - 60px)); max-height:75vh; overflow:auto; background:#1a1d24; border:1px solid #3b4350; border-radius:14px; padding:22px; box-shadow:0 20px 70px #0009; }
+    .modal h2 { margin:0 0 6px; font-size:20px; }
+    .modal h3 { margin:20px 0 8px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+    .modal-row { border-top:1px solid var(--line); padding:11px 0; }
+    .modal-title { font-weight:600; }
+    .task { display:flex; gap:11px; align-items:flex-start; }
+    .task-check { width:10px; height:10px; margin-top:4px; border-radius:50%; background:var(--muted); flex:none; }
+    .task-check.done { background:var(--green); box-shadow:0 0 9px #58d68d88; }
+    .task-status { float:right; color:var(--orange); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+    .modal-meta { color:var(--muted); font-size:12px; margin-top:4px; }
+    .empty { color:var(--muted); border:1px dashed var(--line); border-radius:12px; padding:32px; text-align:center; grid-column:1/-1; }
+    .error { color:#ff8f8f; background:#3a2024; border:1px solid #71363d; border-radius:8px; padding:12px; margin-bottom:16px; }
+    kbd { color:#cbd5e1; background:#252a34; border:1px solid #3b4350; border-radius:4px; padding:2px 5px; font-size:11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Project Cockpit</h1></div>
+    <div class="toolbar"><button id="add-project">Добавить проект</button><button id="view-grid" title="Плитки">▦ Плитки</button><button id="view-list" title="Список">☷ Список</button><button id="tasks">Задачи</button><button id="refresh">Refresh</button><button id="close">Close</button></div>
+  </header>
+  <div class="summary" id="summary">Press <kbd>Alt</kbd>+<kbd>Cmd</kbd>+<kbd>I</kbd> to toggle this window.</div>
+  <div id="error"></div>
+  <main class="grid" id="grid"><div class="empty">Loading workspaces…</div></main>
+  <script>
+    const send = message => {
+      try {
+        window.webkit.messageHandlers.cockpit.postMessage(message);
+      } catch (error) {
+        document.querySelector('#error').innerHTML = `<div class="error">Cockpit bridge error: ${esc(error.message)}</div>`;
+      }
+    };
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const workspaceId = item => item.ref || item.id || item.workspace_id || item.workspaceId || item.uuid || '';
+    const workspaceName = item => item.title || item.name || item.label || `Workspace ${workspaceId(item)}`;
+    const workspacePath = item => item.current_directory || item.cwd || item.working_directory || item.workingDirectory || '';
+    const pathMatches = (workspace, project) => {
+      const actual = workspacePath(workspace);
+      return actual === project.path || actual.startsWith(project.path.replace(/\/$/, '') + '/');
+    };
+    window.cockpitMessage = message => {
+      if (message.type === 'error') {
+        document.querySelector('#error').innerHTML = `<div class="error">${esc(message.message)}</div>`;
+        return;
+      }
+      if (message.type !== 'projects') return;
+      document.querySelector('#error').innerHTML = '';
+      const workspaces = message.workspaces || [];
+      const configured = message.projects || [];
+      window.liveWorkspaces = message.live === true;
+      const projects = configured.map(project => ({...project, tasks: project.tasks || [], workspaces: workspaces.filter(item => pathMatches(item, project))}));
+      window.projectItems = projects;
+      const active = projects.filter(project => project.workspaces.length).length;
+      document.querySelector('#summary').textContent = `${projects.length} projects · ${active} with active workspace${active === 1 ? '' : 's'}`;
+      const grid = document.querySelector('#grid');
+      grid.innerHTML = projects.length ? projects.map(project => {
+        const linked = project.workspaces;
+        const ai = project.ai && project.ai.primary && project.ai.primary !== 'unknown' ? project.ai.primary : 'unknown';
+        const git = project.git && project.git.available ? `${project.git.remote.name} · ${project.git.branch || 'detached'} · ${project.git.changes.length} changes` : 'unavailable';
+        return `<article class="card" data-project-detail="${esc(project.id)}">
+          <div class="card-head"><span class="dot" style="background:${linked.length ? 'var(--green)' : 'var(--muted)'};box-shadow:${linked.length ? '0 0 10px #58d68d88' : 'none'}"></span><span class="name">${esc(project.name)}</span></div>
+          <div class="meta">${esc(project.path)}<br>AI: ${esc(ai)}<br>Git: ${esc(git)}<br>${linked.length ? `${linked.length} active workspace${linked.length === 1 ? '' : 's'}` : 'No active workspace'}</div>
+          <div class="actions">
+            <button class="icon-button" title="Open project in cmux" data-open-project="${esc(project.id)}">⌘</button>
+            <button class="icon-button" title="Show tasks" data-tasks-project="${esc(project.id)}">☑</button>
+            <button class="icon-button" title="Show AI agents" data-agents-project="${esc(project.id)}">✦</button>
+          </div>
+        </article>`;
+      }).join('') : '<div class="empty">No projects configured.</div>';
+      applyView();
+      document.querySelectorAll('[data-open-project]').forEach(button => button.onclick = event => {
+        event.stopPropagation();
+        const project = window.projectItems.find(entry => entry.id === button.dataset.openProject);
+        const current = project && project.workspaces[0];
+        if (current) {
+          send({action:'selectWorkspace', id:workspaceId(current)});
+        } else {
+          send({action:'openCmux', path:project.path});
+        }
+      });
+      document.querySelectorAll('[data-tasks-project]').forEach(button => button.onclick = event => { event.stopPropagation(); showTasks(button.dataset.tasksProject); });
+      document.querySelectorAll('[data-agents-project]').forEach(button => button.onclick = event => { event.stopPropagation(); showProject(button.dataset.agentsProject, 'agents'); });
+      document.querySelectorAll('[data-project-detail]').forEach(card => card.onclick = () => showProjectDetail(card.dataset.projectDetail));
+    };
+    window.projectItems = [];
+    window.showProjectDetail = id => {
+      const project = window.projectItems.find(entry => entry.id === id);
+      if (!project) return;
+      const agents = (project.ai && project.ai.active || []).map(agent => `<div class="modal-row"><div class="modal-title">${esc(agent.name)}</div><div class="modal-meta">${esc(agent.kind)} · ${esc(agent.model)}<br>${esc(agent.directory || '')}</div></div>`).join('') || '<div class="modal-meta">Нет активных AI-сессий.</div>';
+      const workspaces = (project.workspaces || []).map(item => `<div class="modal-row"><div class="modal-title">${esc(workspaceName(item))}</div><div class="modal-meta">${esc(workspacePath(item))}</div></div>`).join('') || '<div class="modal-meta">Нет связанных workspace.</div>';
+      const tasks = (project.tasks || []).filter(task => !window.hideDone || task.status !== 'done').map(task => `<div class="modal-row"><div class="modal-title">${esc(task.title)}</div><div class="modal-meta">${esc(task.status)}</div></div>`).join('') || '<div class="modal-meta">Нет задач.</div>';
+      const gitInfo = project.git && project.git.available ? project.git : null;
+      const gitChanges = gitInfo && gitInfo.changes.length ? gitInfo.changes.map(change => `<div class="modal-row"><div class="modal-title">${esc(change.code)} ${esc(change.file)}</div></div>`).join('') : '<div class="modal-meta">Нет незакоммиченных изменений.</div>';
+      const gitCommits = gitInfo && gitInfo.commits.length ? gitInfo.commits.map(commit => `<div class="modal-row"><div class="modal-title">${esc(commit.subject)}</div><div class="modal-meta">${esc(commit.short_hash)} · ${esc(commit.author)} · ${esc(commit.date)}</div></div>`).join('') : '<div class="modal-meta">Коммиты недоступны.</div>';
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      const slack = 'Доступен только для Claude через connector.';
+      const canPrepareMr = gitInfo && gitInfo.remote && gitInfo.remote.id === 'gitlab';
+      backdrop.innerHTML = `<section class="modal"><h2>${esc(project.name)}</h2><div class="modal-meta">${esc(project.path)}</div><div class="actions" style="margin-top:16px"><button data-open-zed>Открыть в Zed</button><button data-open-cmux>Открыть workspace</button><button data-ai-command>Дать команду AI</button>${canPrepareMr ? '<button data-prepare-change>Подготовить MR</button>' : ''}</div><h3>AI</h3><div class="modal-meta">Primary: ${esc(project.ai && project.ai.primary || 'unknown')}</div>${agents}<h3>Workspaces</h3>${workspaces}<h3>Git</h3><div class="modal-meta">${gitInfo ? `${esc(gitInfo.remote.name)} · branch: ${esc(gitInfo.branch || 'detached')} · ${gitInfo.commits.length} commits` : 'Git repository не найден.'}</div><h3>Изменения</h3>${gitChanges}<h3>Последние коммиты</h3>${gitCommits}<h3>Slack</h3><div class="modal-meta">${slack}</div><h3>Задачи</h3>${tasks}<div class="actions" style="margin-top:18px"><button data-dismiss>Закрыть</button></div></section>`;
+      backdrop.querySelector('[data-open-zed]').onclick = () => send({action:'openProject', path:project.path});
+      backdrop.querySelector('[data-open-cmux]').onclick = () => send({action:'openCmux', path:project.path});
+      backdrop.querySelector('[data-ai-command]').onclick = () => {
+        const command = prompt('Команда для AI-сессии проекта:', '');
+        if (command) send({action:'startTasks', path:project.path, command});
+      };
+      const prepare = backdrop.querySelector('[data-prepare-change]');
+      if (prepare) prepare.onclick = () => {
+        const branch = project.git.branch || '';
+        const base = branch === 'main' || branch === 'master' ? 'Нельзя создавать MR из main/master.' : `Будет подготовлен GitLab MR из ветки ${branch || '(current)'} относительно origin/main. Прямой push в main запрещён.`;
+        alert(base);
+      };
+      backdrop.onclick = event => { if (event.target === backdrop || event.target.closest('[data-dismiss]')) backdrop.remove(); };
+      document.body.appendChild(backdrop);
+    };
+    const savedView = localStorage.getItem('cockpit-view') || 'grid';
+    window.currentView = savedView === 'list' ? 'list' : 'grid';
+    window.applyView = () => {
+      const grid = document.querySelector('#grid');
+      grid.classList.toggle('list', window.currentView === 'list');
+      document.querySelector('#view-grid').style.borderColor = window.currentView === 'grid' ? 'var(--blue)' : 'var(--line)';
+      document.querySelector('#view-list').style.borderColor = window.currentView === 'list' ? 'var(--blue)' : 'var(--line)';
+    };
+    const setView = view => {
+      window.currentView = view;
+      localStorage.setItem('cockpit-view', view);
+      applyView();
+    };
+    window.hideDone = localStorage.getItem('cockpit-hide-done') === 'true';
+    window.showTasks = projectId => {
+      const project = projectId ? window.projectItems.find(entry => entry.id === projectId) : null;
+      const groups = project ? [project] : window.projectItems.filter(entry => entry.tasks && entry.tasks.length);
+      const allTasks = groups.flatMap(entry => entry.tasks);
+      const taskCount = allTasks.length;
+      const done = allTasks.filter(task => task.status === 'done').length;
+      const visibleGroups = groups.map(entry => ({...entry, tasks: entry.tasks.filter(task => !window.hideDone || task.status !== 'done')})).filter(entry => entry.tasks.length);
+      const rows = visibleGroups.length ? visibleGroups.map(entry => {
+        const taskRows = entry.tasks.map(task => {
+        const complete = task.status === 'done';
+        const selector = complete ? `<span class="task-check done"></span>` : `<input type="checkbox" data-task-select data-task-project="${esc(entry.id)}" data-task-id="${esc(task.id)}">`;
+        return `<div class="modal-row task">${selector}<div><span class="task-status">${complete ? 'done' : 'todo'}</span><div class="modal-title">${esc(task.title)}</div><div class="modal-meta">${esc(task.description || '')}</div></div></div>`;
+        }).join('');
+        return `<h3>${esc(entry.name)}</h3>${taskRows}`;
+      }).join('') : `<div class="modal-row modal-meta">${window.hideDone && done ? 'Все выполненные задачи скрыты.' : 'Задачи пока не определены.'}</div>`;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `<section class="modal"><h2>Задачи</h2><div class="modal-meta">${done} из ${taskCount} выполнено</div><div class="actions" style="margin-top:14px"><button data-mark-all>Mark all</button><button data-delete-selected>Удалить выбранные</button><button data-start-selected>Запустить работу</button><button data-toggle-hide-done>${window.hideDone ? 'Show done' : 'Hide done'}</button></div>${rows}<div class="actions" style="margin-top:18px"><button data-dismiss>Закрыть</button></div></section>`;
+      backdrop.querySelector('[data-toggle-hide-done]').onclick = () => {
+        window.hideDone = !window.hideDone;
+        localStorage.setItem('cockpit-hide-done', window.hideDone ? 'true' : 'false');
+        backdrop.remove();
+        showTasks(projectId);
+      };
+      backdrop.querySelector('[data-mark-all]').onclick = () => {
+        backdrop.querySelectorAll('[data-task-select]').forEach(input => { input.checked = true; });
+      };
+      const selectedTasks = () => Array.from(backdrop.querySelectorAll('[data-task-select]:checked')).map(input => ({ projectId: input.dataset.taskProject, id: input.dataset.taskId }));
+      backdrop.querySelector('[data-delete-selected]').onclick = () => {
+        const selected = selectedTasks();
+        if (!selected.length) return;
+        if (!confirm(`Удалить выбранные задачи (${selected.length})?`)) return;
+        const byProject = {};
+        selected.forEach(item => { (byProject[item.projectId] ||= []).push(item.id); });
+        Object.entries(byProject).forEach(([id, ids]) => {
+          const selectedProject = window.projectItems.find(item => item.id === id);
+          if (selectedProject) send({action:'deleteTasks', path:selectedProject.path, ids});
+        });
+        backdrop.remove();
+      };
+      backdrop.querySelector('[data-start-selected]').onclick = () => {
+        const selected = selectedTasks();
+        if (!selected.length) return;
+        const byProject = {};
+        selected.forEach(item => { (byProject[item.projectId] ||= []).push(item.id); });
+        Object.entries(byProject).forEach(([id, ids]) => {
+          const selectedProject = window.projectItems.find(item => item.id === id);
+          const selectedTitles = selectedProject && selectedProject.tasks.filter(task => ids.includes(task.id)).map(task => `- ${task.title}`);
+          if (selectedProject) send({action:'startTasks', path:selectedProject.path, command:`Выполни задачи проекта:\n${(selectedTitles || []).join('\n')}`});
+        });
+      };
+      backdrop.onclick = event => { if (event.target === backdrop || event.target.closest('[data-dismiss]')) backdrop.remove(); };
+      document.body.appendChild(backdrop);
+    };
+    window.showProject = (id, mode) => {
+      const project = window.projectItems.find(entry => entry.id === id);
+      if (!project) return;
+      const list = project.workspaces.flatMap(item => mode === 'agents' ? (item.agents || []) : (item.panels || []));
+      const title = mode === 'agents' ? 'AI agents' : 'Workspace surfaces / tasks';
+      const rows = list.length ? list.map(row => mode === 'agents'
+        ? `<div class="modal-row"><div class="modal-title">${esc(row.name)}</div><div class="modal-meta">kind: ${esc(row.kind)} · model: ${esc(row.model)}<br>${esc(row.directory || '')}</div></div>`
+        : `<div class="modal-row"><div class="modal-title">${esc(row.title)}</div><div class="modal-meta">${esc(row.type || 'surface')} · ${esc(row.directory || '')}</div></div>`).join('')
+        : '<div class="modal-row modal-meta">No data in cmux snapshot.</div>';
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `<section class="modal"><h2>${esc(project.name)}</h2><div class="modal-meta">${esc(project.path)}</div><h3>${esc(title)}</h3>${rows}<div class="actions" style="margin-top:18px"><button data-dismiss>Close</button></div></section>`;
+      backdrop.onclick = event => { if (event.target === backdrop || event.target.closest('[data-dismiss]')) backdrop.remove(); };
+      document.body.appendChild(backdrop);
+    };
+    document.querySelector('#add-project').onclick = () => send({action:'addProject'});
+    document.querySelector('#view-grid').onclick = () => setView('grid');
+    document.querySelector('#view-list').onclick = () => setView('list');
+    document.querySelector('#tasks').onclick = () => showTasks();
+    document.querySelector('#refresh').onclick = () => send({action:'refresh'});
+    document.querySelector('#close').onclick = () => send({action:'close'});
+    window.addEventListener('keydown', event => { if (event.key === 'Escape') send({action:'close'}); });
+  </script>
+</body>
+</html>
