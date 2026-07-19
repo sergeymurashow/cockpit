@@ -1,0 +1,17 @@
+dofile([[/Users/sergeimurashov/.hammerspoon/devos-loader.lua]])
+local panel = require("panel")
+local layouts = require("layouts")
+
+panel.setLayoutHandler(function(target)
+  layouts.apply(target)
+end)
+
+-- Build and load the hidden WebView immediately, not on the first hotkey press.
+panel.preload()
+
+-- HOTKEY: Ctrl + Alt + Space toggles the already-preloaded DevOS palette.
+hs.hotkey.bind({ "ctrl", "alt" }, "space", function()
+  panel.toggle()
+end)
+
+hs.alert.show("DevOS: Ctrl+Alt+Space")
